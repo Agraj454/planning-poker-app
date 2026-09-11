@@ -60,6 +60,37 @@ Whichever you pick, once deployed you'll get a public URL (e.g.
 `https://your-app.onrender.com`) — that's the link you share with your team
 instead of localhost.
 
+## Admin view
+
+There are two roles:
+
+- **Regular participants** vote normally. While voting is open, they see
+  everyone else's card as a face-down "?" and only know their own vote —
+  same as before. Once someone reveals, everyone sees everyone's vote and
+  the average/median, same as before.
+- **Admins** see every participant's actual vote live, by name, while
+  voting is still open — before anyone reveals. This is enforced on the
+  server: non-admin clients are never sent the real vote values for other
+  people until reveal, so it's not just hidden in the UI.
+
+To join as admin, check "Join as admin" on the join screen and enter the
+admin PIN. The PIN is set via the `ADMIN_PIN` environment variable:
+
+- **Locally**: `ADMIN_PIN=your-pin npm start` (or add it to a `.env` file
+  if you introduce a loader like `dotenv`).
+- **On Render**: go to your service > Environment, add a variable named
+  `ADMIN_PIN` with your chosen value, and save (this triggers a redeploy).
+
+If `ADMIN_PIN` isn't set, the server falls back to `admin123` and logs a
+warning on startup — fine for local testing, but set a real one before
+sharing the deployed link with your team.
+
+Anyone who knows the PIN can join as admin — there's no per-person admin
+list. If you want tighter control (e.g. only specific people, or an
+audit trail of who has admin access), that's a bigger change involving
+real user accounts rather than a shared PIN; let me know if you want that
+instead.
+
 ## Customizing
 
 - **Card deck**: edit the `DECK` array in `public/index.html` (currently
