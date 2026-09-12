@@ -33,7 +33,21 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
 const GITHUB_REPO = process.env.GITHUB_REPO || null; // format: "owner/repo"
 
 const DEFAULT_DECK = ['1', '2', '3', '5', '8', '13', '21', '?', '\u2615'];
-const STALE_DISCONNECT_MS = 10 * 60 * 1000; // remove ghosts after 10 idle minutes
+const STALE_DISCONNECT_MS = 10 * 60 * 1000; // remove ghost admins after 10 idle minutes (safety net)
+const ADMIN_GRACE_MS = 5 * 1000; // tolerate a brief admin disconnect (e.g. a refresh) before ending the room
+
+// Ambiguous characters (I, O, 0, 1) are excluded so codes are easy to read
+// aloud and type back in without mixing up letters and digits.
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const CODE_LENGTH = 6;
+
+function generateRoomCode() {
+  let code = '';
+  for (let i = 0; i < CODE_LENGTH; i++) {
+    code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return code;
+}
 
 // --- Room store ---------------------------------------------------------
 //
@@ -83,6 +97,28 @@ function cleanupIfEmpty(code) {
   }
 }
 
+function adminCount(room) {
+  return Object.values(room.participants).filter((p) => p.isAdmin).length;
+}
+
+// Kicks every currently-connected participant out with a reason, then
+// deletes the room entirely. Used when the admin leaves or disconnects \u2014
+// without a facilitator, the session is over for everyone.
+function endRoom(code, reason) {
+  const room = rooms[code];
+  if (!room) return;
+  Object.values(room.participants).forEach((p) => {
+    if (p.socketId) {
+      const s = io.sockets.sockets.get(p.socketId);
+      if (s) {
+        s.emit('room-ended', reason);
+        s.leave(code);
+      }
+    }
+  });
+  delete rooms[code];
+}
+
 function computeRoundSummary(room) {
   const numeric = Object.values(room.participants)
     .filter((p) => p.vote !== null && !isNaN(parseInt(p.vote, 10)))
@@ -97,6 +133,13 @@ function computeRoundSummary(room) {
   vals.forEach((v) => (freq[v] = (freq[v] || 0) + 1));
   const mode = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
   return { avg, median, mode };
+}
+
+// Strips the name off each vote, keeping only the value \u2014 used so
+// non-admin viewers get the distribution of votes without learning who
+// cast which one.
+function anonymizeVotes(votes) {
+  return votes.map((v) => ({ vote: v.vote }));
 }
 
 function notifyRevealWebhook(room) {
@@ -157,7 +200,12 @@ function buildPayloadFor(room, roomCode, viewerId) {
 
   const participants = {};
   Object.entries(room.participants).forEach(([id, p]) => {
-    const canSeeValue = revealed || viewerIsAdmin || id === viewerId;
+    // Only the admin (and you, for your own vote) ever see a name tied to
+    // a value here \u2014 that stays true even after reveal now, so results
+    // are anonymous for everyone except the admin. The team-wide numbers
+    // (average/median/consensus) are sent separately via `results` below,
+    // with no names attached at all.
+    const canSeeValue = viewerIsAdmin || id === viewerId;
     participants[id] = {
       name: p.name,
       isAdmin: !!p.isAdmin,
@@ -167,6 +215,39 @@ function buildPayloadFor(room, roomCode, viewerId) {
       vote: canSeeValue ? p.vote : null,
     };
   });
+
+  let results = null;
+  if (revealed) {
+    const summary = computeRoundSummary(room);
+    if (viewerIsAdmin) {
+      const named = Object.values(room.participants)
+        .filter((p) => p.vote !== null)
+        .map((p) => ({ name: p.name, vote: p.vote }));
+      results = {
+        avg: summary.avg,
+        median: summary.median,
+        mode: summary.mode,
+        values: named.map((v) => v.vote),
+        named, // admin only: lets the UI show whose vote was which
+      };
+    } else {
+      const values = Object.values(room.participants)
+        .filter((p) => p.vote !== null)
+        .map((p) => p.vote);
+      results = { avg: summary.avg, median: summary.median, mode: summary.mode, values };
+    }
+  }
+
+  const history = viewerIsAdmin
+    ? room.history
+    : room.history.map((h) => ({
+        story: h.story,
+        revealedAt: h.revealedAt,
+        avg: h.avg,
+        median: h.median,
+        mode: h.mode,
+        votes: anonymizeVotes(h.votes),
+      }));
 
   return {
     roomCode,
@@ -179,7 +260,8 @@ function buildPayloadFor(room, roomCode, viewerId) {
     autoReveal: !!room.autoReveal,
     timerEndAt: room.timerEndAt || null,
     queue: room.queue,
-    history: room.history,
+    results,
+    history,
     integrations: {
       githubImportAvailable: !!(GITHUB_TOKEN && GITHUB_REPO),
     },
@@ -212,9 +294,39 @@ io.on('connection', (socket) => {
     return me;
   }
 
+  socket.on('create-room', ({ name }) => {
+    const cleanName = String(name || '').trim().slice(0, 20);
+    if (!cleanName) return;
+
+    let code;
+    do {
+      code = generateRoomCode();
+    } while (rooms[code]);
+
+    const room = getOrCreateRoom(code);
+    const pid = generateId();
+
+    currentRoom = code;
+    myParticipantId = pid;
+    socket.join(code);
+
+    room.participants[pid] = {
+      name: cleanName,
+      vote: null,
+      isAdmin: true,
+      joinedAt: Date.now(),
+      connected: true,
+      disconnectedAt: null,
+      socketId: socket.id,
+    };
+
+    socket.emit('room-created', { roomCode: code, participantId: pid });
+    broadcastRoom(code);
+  });
+
   socket.on('join', ({ roomCode, name, adminPin, participantId }) => {
     if (!roomCode || !name) return;
-    const code = String(roomCode).trim().toLowerCase();
+    const code = String(roomCode).trim().toUpperCase();
     const cleanName = String(name).trim().slice(0, 20);
     if (!code || !cleanName) return;
 
@@ -253,7 +365,9 @@ io.on('connection', (socket) => {
 
   socket.on('set-story', (story) => {
     if (!currentRoom || !rooms[currentRoom]) return;
-    rooms[currentRoom].story = String(story || '').slice(0, 200);
+    const room = rooms[currentRoom];
+    if (!requireAdmin(room)) return;
+    room.story = String(story || '').slice(0, 200);
     broadcastRoom(currentRoom);
   });
 
@@ -282,6 +396,7 @@ io.on('connection', (socket) => {
   socket.on('new-round', () => {
     if (!currentRoom || !rooms[currentRoom]) return;
     const room = rooms[currentRoom];
+    if (!requireAdmin(room)) return;
     finishRoundAndAdvance(room, room.story);
     broadcastRoom(currentRoom);
   });
@@ -403,6 +518,7 @@ io.on('connection', (socket) => {
     if (!currentRoom || !rooms[currentRoom]) return;
     const room = rooms[currentRoom];
     if (!requireAdmin(room)) return;
+    if (targetId === myParticipantId) return; // use "leave" or "step down" instead
     const target = room.participants[targetId];
     if (!target) return;
     delete room.participants[targetId];
@@ -419,25 +535,56 @@ io.on('connection', (socket) => {
 
   socket.on('leave', () => {
     if (currentRoom && rooms[currentRoom] && myParticipantId) {
-      delete rooms[currentRoom].participants[myParticipantId];
+      const room = rooms[currentRoom];
+      delete room.participants[myParticipantId];
       socket.leave(currentRoom);
-      broadcastRoom(currentRoom);
-      cleanupIfEmpty(currentRoom);
+      if (adminCount(room) === 0) {
+        endRoom(currentRoom, 'The admin left \u2014 this room is now closed.');
+      } else {
+        broadcastRoom(currentRoom);
+        cleanupIfEmpty(currentRoom);
+      }
     }
     currentRoom = null;
     myParticipantId = null;
   });
 
   socket.on('disconnect', () => {
-    if (currentRoom && rooms[currentRoom] && myParticipantId) {
-      const room = rooms[currentRoom];
-      const p = room.participants[myParticipantId];
-      if (p && p.socketId === socket.id) {
-        p.connected = false;
-        p.disconnectedAt = Date.now();
-        p.socketId = null;
-        broadcastRoom(currentRoom);
-      }
+    if (!currentRoom || !rooms[currentRoom] || !myParticipantId) return;
+    const room = rooms[currentRoom];
+    const p = room.participants[myParticipantId];
+    if (!p || p.socketId !== socket.id) return;
+
+    if (p.isAdmin) {
+      // Give this admin a short window to reconnect (e.g. a page refresh or
+      // a brief network drop) before removing them for good.
+      p.connected = false;
+      p.disconnectedAt = Date.now();
+      p.socketId = null;
+      broadcastRoom(currentRoom);
+
+      const code = currentRoom;
+      const pid = myParticipantId;
+      setTimeout(() => {
+        const r = rooms[code];
+        if (!r) return;
+        const admin = r.participants[pid];
+        if (admin && !admin.connected) {
+          delete r.participants[pid];
+          if (adminCount(r) === 0) {
+            endRoom(code, 'The admin left \u2014 this room is now closed.');
+          } else {
+            broadcastRoom(code);
+            cleanupIfEmpty(code);
+          }
+        }
+      }, ADMIN_GRACE_MS);
+    } else {
+      // Non-admins are removed immediately rather than lingering \u2014 if they
+      // want back in, they rejoin with the room code like anyone else.
+      delete room.participants[myParticipantId];
+      broadcastRoom(currentRoom);
+      cleanupIfEmpty(currentRoom);
     }
   });
 });
