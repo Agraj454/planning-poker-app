@@ -204,7 +204,7 @@
       <h2>Start a new session</h2>
       <div class="sub">You'll get a room code to share with your team, and you'll automatically be the admin \u2014 no PIN needed.</div>
       <label for="createNameInput">Your name</label>
-      <input type="text" id="createNameInput" placeholder="e.g. Chuck" maxlength="20" />
+      <input type="text" id="createNameInput" placeholder="e.g. Priya" maxlength="20" />
       <div class="error-text" id="createError"></div>
       <button class="btn btn-gold btn-block" onclick="createRoom()">Create room</button>
     </div>
@@ -215,7 +215,7 @@
       <label for="roomInput">Room code</label>
       <input type="text" id="roomInput" placeholder="e.g. K3F9P2" maxlength="12" style="text-transform:uppercase;" />
       <label for="nameInput">Your name</label>
-      <input type="text" id="nameInput" placeholder="e.g. Lorris" maxlength="20" />
+      <input type="text" id="nameInput" placeholder="e.g. Priya" maxlength="20" />
 
       <label class="inline" style="margin-top:18px;">
         <input type="checkbox" id="adminToggle" onchange="toggleAdminField()" />
@@ -229,6 +229,11 @@
       <div class="error-text" id="joinError"></div>
       <button class="btn btn-gold btn-block" onclick="joinRoom()">Join room</button>
     </div>
+  </div>
+
+  <div id="reconnectingScreen" class="join-card" style="display:none;">
+    <h2>Reconnecting&hellip;</h2>
+    <div class="sub">Rejoining your room and restoring your vote.</div>
   </div>
 
   <div id="roomScreen" style="display:none;">
@@ -451,9 +456,13 @@ function attachCommonHandlers() {
     if (!hasEnteredRoom) {
       hasEnteredRoom = true;
       document.getElementById('joinScreen').style.display = 'none';
+      document.getElementById('reconnectingScreen').style.display = 'none';
       document.getElementById('roomScreen').style.display = 'block';
       document.getElementById('roomCodeDisplay').textContent = roomCode;
       startTimerTicker();
+      try {
+        sessionStorage.setItem('poker-active-room', JSON.stringify({ roomCode, name: myName }));
+      } catch (e) {}
     }
     render(room);
   });
@@ -518,14 +527,45 @@ function joinRoom() {
   });
 }
 
+// Called on page load when sessionStorage shows we were mid-session in a
+// room. Uses the same stable participantId as before, so as long as we're
+// within the server's reconnect grace window, we come back as the exact
+// same participant \u2014 same vote, same admin status \u2014 with no re-typing.
+function autoRejoin(savedRoomCode, savedName) {
+  roomCode = savedRoomCode;
+  myName = savedName;
+  hasEnteredRoom = false;
+  lastPhase = null;
+
+  const participantId = getParticipantId(roomCode);
+  socket = io();
+  attachCommonHandlers();
+
+  socket.on('connect', () => {
+    document.getElementById('connTag').textContent = 'Connected';
+    document.getElementById('connTag').className = 'connection-tag online';
+    socket.emit('join', { roomCode, name: myName, participantId });
+  });
+
+  socket.on('join-error', (msg) => {
+    try { sessionStorage.removeItem('poker-active-room'); } catch (e) {}
+    document.getElementById('reconnectingScreen').style.display = 'none';
+    document.getElementById('joinScreen').style.display = 'block';
+    document.getElementById('joinError').textContent = msg || 'Could not resume your previous session \u2014 please rejoin.';
+    if (socket) { socket.disconnect(); socket = null; }
+  });
+}
+
 function leaveRoom(skipEmit) {
   if (socket) {
     if (!skipEmit) socket.emit('leave');
     socket.disconnect();
     socket = null;
   }
+  try { sessionStorage.removeItem('poker-active-room'); } catch (e) {}
   stopTimerTicker();
   document.getElementById('roomScreen').style.display = 'none';
+  document.getElementById('reconnectingScreen').style.display = 'none';
   document.getElementById('joinScreen').style.display = 'block';
   document.getElementById('resultsPanel').style.display = 'none';
   selectedCard = null;
@@ -960,6 +1000,20 @@ try {
     document.getElementById('createNameInput').value = savedName;
   }
 } catch (e) {}
+
+(function attemptAutoRejoin() {
+  try {
+    const raw = sessionStorage.getItem('poker-active-room');
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || !saved.roomCode || !saved.name) return;
+    document.getElementById('joinScreen').style.display = 'none';
+    document.getElementById('reconnectingScreen').style.display = 'block';
+    autoRejoin(saved.roomCode, saved.name);
+  } catch (e) {
+    // Malformed saved session \u2014 just fall through to the normal join screen.
+  }
+})();
 </script>
 </body>
 </html>

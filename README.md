@@ -105,21 +105,16 @@ On Render: Service > Environment tab. Locally: prefix your command, e.g.
 
 ## What happens when someone leaves
 
-- **Non-admin closes their tab, refreshes, or clicks Leave room**: they're
-  removed immediately \u2014 no lingering "offline" ghost. To get back in, they
-  rejoin with the same room code, same as anyone joining fresh.
-- **Admin closes their tab, refreshes, or clicks Leave room**: the whole
-  room ends. Everyone else sees a "This room is now closed" message and is
-  returned to the join screen. There's a 5-second grace period on a plain
-  disconnect (not on an explicit Leave room click) so a brief wifi drop or
-  an accidental refresh doesn't nuke the session \u2014 if the admin reconnects
-  within those 5 seconds (same tab, same session), the room carries on
-  normally. Past that window, or on an explicit Leave, it's closed for good.
+- **A refresh or brief disconnect (any role)**: the page now remembers which room and name you were using, and automatically reconnects on load \u2014 no retyping, and your vote/admin status come back exactly as they were. This works because the server gives everyone (not just the admin) a 5-second grace window before actually removing them, so a refresh's brief reconnect lands well within it.
+- **Actually closing the tab, or clicking Leave room**: removed for real \u2014 there's no saved session to auto-resume (closing a tab clears the browser's `sessionStorage`), so getting back in means rejoining with the room code like anyone else.
+- **Admin closes their tab or clicks Leave room**: same grace window applies, but once it expires (or immediately, on an explicit Leave click) the room ends for everyone if that was the last remaining admin.
+
+One edge case worth knowing: if a refresh takes longer than 5 seconds to reconnect (very slow network), the old participant record will already be gone by the time it retries, and you'll rejoin as a brand-new participant in the same room \u2014 losing your vote and, if you were admin, your admin status. This should be rare in practice; let me know if you want the window longer.
 
 There's intentionally no "transfer admin to someone else" step \u2014 if you
-want the session to survive the original admin leaving, that's a different
-feature (electing a new admin from the remaining participants) that I
-haven't built; say so if you want it.
+want the session to survive the original admin leaving for good (not just a
+refresh), that's a different feature (electing a new admin from the
+remaining participants) that I haven't built; say so if you want it.
 
 ## Anonymous results
 

@@ -33,8 +33,8 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
 const GITHUB_REPO = process.env.GITHUB_REPO || null; // format: "owner/repo"
 
 const DEFAULT_DECK = ['1', '2', '3', '5', '8', '13', '21', '?', '\u2615'];
-const STALE_DISCONNECT_MS = 10 * 60 * 1000; // remove ghost admins after 10 idle minutes (safety net)
-const ADMIN_GRACE_MS = 5 * 1000; // tolerate a brief admin disconnect (e.g. a refresh) before ending the room
+const STALE_DISCONNECT_MS = 10 * 60 * 1000; // safety-net sweep, shouldn't normally be needed
+const RECONNECT_GRACE_MS = 5 * 1000; // tolerate a brief disconnect (refresh, wifi blip) before removing anyone
 
 // Ambiguous characters (I, O, 0, 1) are excluded so codes are easy to read
 // aloud and type back in without mixing up letters and digits.
@@ -555,37 +555,34 @@ io.on('connection', (socket) => {
     const p = room.participants[myParticipantId];
     if (!p || p.socketId !== socket.id) return;
 
-    if (p.isAdmin) {
-      // Give this admin a short window to reconnect (e.g. a page refresh or
-      // a brief network drop) before removing them for good.
-      p.connected = false;
-      p.disconnectedAt = Date.now();
-      p.socketId = null;
-      broadcastRoom(currentRoom);
+    // Everyone gets a short window to reconnect (e.g. a page refresh or a
+    // brief wifi drop) before being removed. This is what lets a refresh
+    // resume the same room with the same vote intact, for admins and
+    // regular participants alike. A genuine tab close never reconnects, so
+    // it just plays out as a removal once the window elapses \u2014 same end
+    // result as before, just not instant.
+    p.connected = false;
+    p.disconnectedAt = Date.now();
+    p.socketId = null;
+    broadcastRoom(currentRoom);
 
-      const code = currentRoom;
-      const pid = myParticipantId;
-      setTimeout(() => {
-        const r = rooms[code];
-        if (!r) return;
-        const admin = r.participants[pid];
-        if (admin && !admin.connected) {
-          delete r.participants[pid];
-          if (adminCount(r) === 0) {
-            endRoom(code, 'The admin left \u2014 this room is now closed.');
-          } else {
-            broadcastRoom(code);
-            cleanupIfEmpty(code);
-          }
+    const code = currentRoom;
+    const pid = myParticipantId;
+    setTimeout(() => {
+      const r = rooms[code];
+      if (!r) return;
+      const entry = r.participants[pid];
+      if (entry && !entry.connected) {
+        const wasAdmin = entry.isAdmin;
+        delete r.participants[pid];
+        if (wasAdmin && adminCount(r) === 0) {
+          endRoom(code, 'The admin left \u2014 this room is now closed.');
+        } else {
+          broadcastRoom(code);
+          cleanupIfEmpty(code);
         }
-      }, ADMIN_GRACE_MS);
-    } else {
-      // Non-admins are removed immediately rather than lingering \u2014 if they
-      // want back in, they rejoin with the room code like anyone else.
-      delete room.participants[myParticipantId];
-      broadcastRoom(currentRoom);
-      cleanupIfEmpty(currentRoom);
-    }
+      }
+    }, RECONNECT_GRACE_MS);
   });
 });
 
