@@ -135,13 +135,6 @@ function computeRoundSummary(room) {
   return { avg, median, mode };
 }
 
-// Strips the name off each vote, keeping only the value \u2014 used so
-// non-admin viewers get the distribution of votes without learning who
-// cast which one.
-function anonymizeVotes(votes) {
-  return votes.map((v) => ({ vote: v.vote }));
-}
-
 function notifyRevealWebhook(room) {
   if (!REVEAL_WEBHOOK_URL) return;
   const summary = computeRoundSummary(room);
@@ -200,12 +193,12 @@ function buildPayloadFor(room, roomCode, viewerId) {
 
   const participants = {};
   Object.entries(room.participants).forEach(([id, p]) => {
-    // Only the admin (and you, for your own vote) ever see a name tied to
-    // a value here \u2014 that stays true even after reveal now, so results
-    // are anonymous for everyone except the admin. The team-wide numbers
-    // (average/median/consensus) are sent separately via `results` below,
-    // with no names attached at all.
-    const canSeeValue = viewerIsAdmin || id === viewerId;
+    // While voting is still open, only the admin (and you, for your own
+    // vote) see a name tied to a value \u2014 that's what keeps early votes
+    // from anchoring the team. Once revealed, everyone sees everyone's
+    // named vote; anonymity was only ever meant to cover the voting phase,
+    // not the post-discussion result.
+    const canSeeValue = revealed || viewerIsAdmin || id === viewerId;
     participants[id] = {
       name: p.name,
       isAdmin: !!p.isAdmin,
@@ -219,35 +212,19 @@ function buildPayloadFor(room, roomCode, viewerId) {
   let results = null;
   if (revealed) {
     const summary = computeRoundSummary(room);
-    if (viewerIsAdmin) {
-      const named = Object.values(room.participants)
-        .filter((p) => p.vote !== null)
-        .map((p) => ({ name: p.name, vote: p.vote }));
-      results = {
-        avg: summary.avg,
-        median: summary.median,
-        mode: summary.mode,
-        values: named.map((v) => v.vote),
-        named, // admin only: lets the UI show whose vote was which
-      };
-    } else {
-      const values = Object.values(room.participants)
-        .filter((p) => p.vote !== null)
-        .map((p) => p.vote);
-      results = { avg: summary.avg, median: summary.median, mode: summary.mode, values };
-    }
+    const named = Object.values(room.participants)
+      .filter((p) => p.vote !== null)
+      .map((p) => ({ name: p.name, vote: p.vote }));
+    results = {
+      avg: summary.avg,
+      median: summary.median,
+      mode: summary.mode,
+      values: named.map((v) => v.vote),
+      named, // everyone gets this once revealed \u2014 who voted what
+    };
   }
 
-  const history = viewerIsAdmin
-    ? room.history
-    : room.history.map((h) => ({
-        story: h.story,
-        revealedAt: h.revealedAt,
-        avg: h.avg,
-        median: h.median,
-        mode: h.mode,
-        votes: anonymizeVotes(h.votes),
-      }));
+  const history = room.history; // revealed rounds were already shown to everyone; no need to anonymize after the fact
 
   return {
     roomCode,
@@ -603,7 +580,7 @@ setInterval(() => {
   });
 }, 60 * 1000);
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Planning poker server listening on port ${PORT}`);
 });

@@ -513,7 +513,7 @@ function getResultsView(room) {
     allSame,
     spread,
     values: room.results.values, // raw, unattributed \u2014 includes non-numeric cards like '?' or \u2615
-    named: room.results.named || null, // present only for the admin viewer
+    named: room.results.named || null, // present for everyone once revealed
   };
 }
 

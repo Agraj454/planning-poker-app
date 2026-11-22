@@ -116,19 +116,22 @@ want the session to survive the original admin leaving for good (not just a
 refresh), that's a different feature (electing a new admin from the
 remaining participants) that I haven't built; say so if you want it.
 
-## Anonymous results
+## Anonymous while voting, open after reveal
 
-Once revealed, regular participants see the **team's numbers** \u2014 average,
-median, consensus, and the raw spread of values \u2014 but never which value
-belongs to which person, in the participant grid or in the results panel.
-Their own card still shows their own value; everyone else's stays face-down.
+While voting is still open, only the admin (and you, for your own vote) can
+see whose card is which value \u2014 everyone else's cards stay face-down. This
+is what keeps early votes from anchoring the rest of the team before
+everyone's locked in.
 
-The **admin** sees the full named breakdown everywhere: the participant
-grid, the results panel (as "Name: value" chips), and round history/CSV
-export all show who voted what. This is enforced server-side: the name-to-
-vote mapping is only ever sent to the admin or to a person for their own
-vote \u2014 everyone else receives just the anonymous value distribution as a
-separate field with no names attached.
+Once the admin reveals, that restriction lifts for everyone: the
+participant grid, the results panel ("Name: value" chips), and round
+history/CSV export all show the full name-to-vote breakdown to every
+participant, not just the admin \u2014 so the team can discuss who voted what.
+This is enforced server-side (the same mechanism as the pre-reveal masking,
+just scoped to only apply during voting): the server simply doesn't include
+a name-to-vote mapping for anyone but the admin or the voter themselves
+until `phase` flips to `revealed`, at which point it's included for every
+viewer.
 
 ## Admin view
 
